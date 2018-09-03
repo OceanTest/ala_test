@@ -50,16 +50,17 @@ def toDo = [
 
 def stageCases = [
     // Precommit
-    "FIO": [passedParser: this.&jsonTypePassedParser]
+    "FIO": [passedParser: this.&jsonTypePassedParser], 
+    "marvo": [passedParser: this.&jsonTypePassedParser]
 ]
-def testcases = ["FIO"]
+def testcases = ["FIO", "marvo"]
 
 timestamps {
-  stage("Build") {
-    echo "After Build"
-    //stash the .dfw file
-  }
-  stage("Test") {
+    stage("Build") {
+        echo "After Build"
+        //stash the .dfw file
+    }
+
     // Do the fio testing
     def Tasks = [:]
     node("ocean_linuxnode") {
@@ -68,38 +69,48 @@ timestamps {
             echo "Here1"
             withEnv( //add variable into environment
             ["SSH_ID=${configMap[task.test][env.EXECUTOR_NUMBER]['SSH_ID']}",
-             "TCP_IP=${configMap[task.test][env.EXECUTOR_NUMBER]['TCP_IP']}"]){              
+                "TCP_IP=${configMap[task.test][env.EXECUTOR_NUMBER]['TCP_IP']}"]){              
                 echo "SSH_ID is ${SSH_ID}"
                 echo "TCP_IP is ${TCP_IP}"
-                sh script: "ssh ${SSH_ID}@${TCP_IP} 'cd /home/svt/fio_script; python3 fio.py fio_test.ini tcp://10.85.149.105 marvell'"
-                sh script: "scp -r ${SSH_ID}@${TCP_IP}:/home/svt/fio_script/Logs/1_FIO/ root@10.18.134.101:/home/jenkins/workspace/Alamere_Test"
-                sh script: "ssh ${SSH_ID}@${TCP_IP} 'rm -r /home/svt/fio_script/Logs/1_FIO'"
+                
+                stage("fio testing"){
+                    sh script: "ssh ${SSH_ID}@${TCP_IP} 'cd /home/svt/fio_script; python3 fio.py fio_test.ini tcp://10.85.149.105 marvell'"
+                    sh script: "scp -r ${SSH_ID}@${TCP_IP}:/home/svt/fio_script/Logs/FIO/ root@10.18.134.101:/home/jenkins/workspace/Alamere_Test"
+                    sh script: "ssh ${SSH_ID}@${TCP_IP} 'rm -r /home/svt/fio_script/Logs/FIO'"
+                }
+                stage("marvo testing"){
+                    sh script: "ssh ${SSH_ID}@${TCP_IP} 'cd /home/svt/marvo; xvfb-run -a python3 Marvo.py /home/svt/marvo /home/svt/marvo/PCIe tcp://10.85.149.105 marvell'"
+                    sh script: "scp -r ${SSH_ID}@${TCP_IP}:/home/svt/marvo/Logs/marvo root@10.18.134.101:/home/jenkins/workspace/Alamere_Test"
+                    sh script: "ssh ${SSH_ID}@${TCP_IP} 'rm -r /home/svt/marvo/Logs/marvo'"
+                }
             }           
         }
-        def results = [:]
-            testcases.each { test ->
-                def settings = stageCases[test]
-                //Collect all test results as a map 
-                Map currentTestResults = [
-                    (test): collectTestResults(                    
-                        test,
-                        settings.passedParser
-                        )
-                    ]
-                results << currentTestResults    
-                echo "results is ${results}"
-                writeFile(file: 'ocean_test.xml', text: resultsAsJUnit(currentTestResults))
-                //Generate the Junit Report 
-                //archiveArtifacts(artifacts: 'ocean_test.xml', excludes: null)
-                step([
-                    $class: 'JUnitResultArchiver',
-                    testResults: '**/ocean_test.xml'
-                    ])
-            }
-            //Publish the result table on the status overview     
-            currentBuild.description = "<br /></strong>${resultsAsTable(results)}"
+        stage("Gernerate Report"){
+            def results = [:]
+                testcases.each { test ->
+                    def settings = stageCases[test]
+                    //Collect all test results as a map 
+                    Map currentTestResults = [
+                        (test): collectTestResults(                    
+                            test,
+                            settings.passedParser
+                            )
+                        ]
+                    results << currentTestResults    
+                    echo "results is ${results}"
+                    writeFile(file: 'ocean_test.xml', text: resultsAsJUnit(currentTestResults))
+                    //Generate the Junit Report 
+                    //archiveArtifacts(artifacts: 'ocean_test.xml', excludes: null)
+                    step([
+                        $class: 'JUnitResultArchiver',
+                        testResults: '**/ocean_test.xml'
+                        ])
+                }
+                //Publish the result table on the status overview     
+                currentBuild.description = "<br /></strong>${resultsAsTable(results)}"
+        }
     }  
-  }    
+      
 }
 
 /**
@@ -115,7 +126,7 @@ def collectTestResults(String test, Closure passedParser) {
 
     // Gather all the logfiles produced.    
     def logFiles = sh (
-            script: "ls 1_FIO/fio_summary.log",
+            script: "ls ${test}/summary.log",
             returnStdout:true
             ).readLines()
 
@@ -124,12 +135,12 @@ def collectTestResults(String test, Closure passedParser) {
         passedParser(logFile, resultMap)
     }
 
-    sh script: "tar -zPcv -f ${test}.tar.gz 1_FIO/*.log"
+    sh script: "tar -zPcv -f ${test}.tar.gz ${test}/*.log"
     // Store the zips as a tar file
     archiveArtifacts artifacts: "${test}.tar.gz", allowEmptyArchive: true
 
     // Cleanup
-    sh "rm -rf 1_FIO/ ${test}.tar.gz"
+    sh "rm -rf ${test}/ ${test}.tar.gz"
 
     // Return the accumulated result.
     return resultMap
