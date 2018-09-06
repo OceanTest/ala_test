@@ -44,65 +44,67 @@ def toDo = [
     [ name: '1098R20_Internal_Bics2_Nvme_Mst_Lite',         soc: '1098R20',      customer: 'Internal',     target: 'Bics2_Nvme_Mst_Lite',          configId: '0',   build: 'windows-build' ],
     [ name: '1098R20_Internal_E2e_Bics2_Nvme_Mst',          soc: '1098R20',      customer: 'Internal',     target: 'E2e_Bics2_Nvme_Mst',           configId: '0',   build: 'windows-build' ],
     [ name: '1098R20_Standard_Ramdrive0',                   soc: '1098R20',      customer: 'Standard',     target: 'Ramdrive0',                    configId: '0',   build: 'windows-build' ],*/
-    [ name: '1098R20_Standard_E2e_Bics2',                   soc: '1098R20',      customer: 'Standard',     target: 'E2e_Bics2',                    configId: '0',   build: 'windows-build', test: env.SOC2_SLAVENAME ],
-
+    [ name: '1098R20_Standard_E2e_Bics2_SC',                soc: '1098R20',      customer: 'Standard',     target: 'E2e_Bics2',                    configId: '0',   build: 'windows-build', test: env.SOC2_SLAVENAME ],
+    [ name: '1098R20_Internal_E2e_Bics2_TP',                soc: '1098R20',      customer: 'Internal',     target: 'E2e_Bics2_Nvme',               configId: '1',   build: 'windows-build', test: env.SOC2_SLAVENAME ],
 ]
 
 def stageCases = [
-    // Precommit
-    "FIO": [passedParser: this.&jsonTypePassedParser], 
-    "marvo": [passedParser: this.&jsonTypePassedParser]
+    // Test Case
+    "FIO": [passedParser: this.&jsonTypePassedParser],
+    "marvo": [passedParser: this.&jsonTypePassedParser]   
 ]
 def testcases = ["FIO", "marvo"]
-
-timestamps {
-    stage("Build") {
-        echo "After Build"
-        //currentBuild.description = "Fake Build Stage"        
-    }
     
-    def Tasks = [:]
-    node("ocean_linuxnode") {
-        toDo.each { task ->           
+def testTasks = [:]
+
+toDo.each { task ->
+    testTasks["$task.name"] = {
+        node("ocean_linuxnode") {           
             withEnv( //add variable into environment
-                ["SSH_ID=${configMap[task.test][env.EXECUTOR_NUMBER]['SSH_ID']}",
-                "TCP_IP=${configMap[task.test][env.EXECUTOR_NUMBER]['TCP_IP']}"]){                         
-                //echo "SSH_ID is ${SSH_ID}"
-                // "TCP_IP is ${TCP_IP}"                
+                ["SSH_ID=${configMap[task.test][task.configId]['SSH_ID']}",
+                "TCP_IP=${configMap[task.test][task.configId]['TCP_IP']}"]){                         
+                echo "SSH_ID is ${SSH_ID}"
+                echo "TCP_IP is ${TCP_IP}"              
                 def results = [:]
                 testcases.each { test ->
                     def settings = stageCases[test]
                     try{
                         // Run the different testing.
-                        stage("${test} testing"){
+                        stage("${test} testing ${task.name}"){
                             switch (test) {
                                 case "FIO":
-                                    sh script: "ssh ${SSH_ID}@${TCP_IP} 'cd /home/svt/fio_script; python3 fio.py fio_test.ini tcp://10.85.149.105 marvell'"
-                                    sh script: "scp -r ${SSH_ID}@${TCP_IP}:/home/svt/fio_script/Logs/FIO/ root@10.18.134.101:/home/jenkins/workspace/Alamere_Test"
-                                    sh script: "ssh ${SSH_ID}@${TCP_IP} 'rm -r /home/svt/fio_script/Logs/FIO'"
+                                    timeout(time: 3, unit: 'MINUTES') {
+                                        sh script: "ssh ${SSH_ID} 'cd /home/svt/fio_script; python3 fio.py fio_test.ini tcp://${TCP_IP} marvell'"
+                                    }
+                                    sh script: "scp -r ${SSH_ID}:/home/svt/fio_script/Logs/FIO/ ${WORKSPACE}"
+                                    sh script: "ssh ${SSH_ID} 'rm -r /home/svt/fio_script/Logs/FIO'"
                                     break
                                 case "marvo":
-                                    sh script: "ssh ${SSH_ID}@${TCP_IP} 'cd /home/svt/marvo; xvfb-run -a python3 Marvo.py /home/svt/marvo /home/svt/marvo/PCIe tcp://10.85.149.105 marvell'"
-                                    sh script: "scp -r ${SSH_ID}@${TCP_IP}:/home/svt/marvo/Logs/marvo root@10.18.134.101:/home/jenkins/workspace/Alamere_Test"
-                                    sh script: "ssh ${SSH_ID}@${TCP_IP} 'rm -r /home/svt/marvo/Logs/marvo'"
+                                    timeout(time: 3, unit: 'HOURS') {
+                                        sh script: "ssh ${SSH_ID} 'cd /home/svt/marvo; xvfb-run -a python3 Marvo.py /home/svt/marvo /home/svt/marvo/PCIe tcp://${TCP_IP} marvell'"
+                                    }
+                                    sh script: "scp -r ${SSH_ID}:/home/svt/marvo/Logs/marvo ${WORKSPACE}"
+                                    sh script: "ssh ${SSH_ID} 'rm -r /home/svt/marvo/Logs/marvo'"
                                     break
                             }
                         }                    
-                        //Collect all test results as a map 
+                        // Collect all test results as a map 
                         Map currentTestResults = [
-                            (test): collectTestResults(                    
+                            (task.name): collectTestResults(                    
                                 test,
-                                settings.passedParser
+                                settings.passedParser,
+                                task.name,
                                 )
                             ]
+                           
                         results << currentTestResults    
                         //echo "results is ${results}"
-                        writeFile(file: '${test}.xml', text: resultsAsJUnit(currentTestResults))
-                        //Generate the Junit Report 
+                        writeFile(file: 'test.xml', text: resultsAsJUnit(currentTestResults))
+                        // Generate the Junit Report 
                         //archiveArtifacts(artifacts: '${test}.xml', excludes: null)
                         step([
                             $class: 'JUnitResultArchiver',
-                            testResults: '**/${test}.xml'
+                            testResults: '**/test.xml'
                             ])                    
                     } catch(e) {
                             /* Error Handling
@@ -111,12 +113,12 @@ timestamps {
                             echo "Testing failed due to $e"
                             switch (test) {
                                 case "FIO":
-                                    sh script: "scp -r ${SSH_ID}@${TCP_IP}:/home/svt/fio_script/Logs/FIO/ root@10.18.134.101:/home/jenkins/workspace/Alamere_Test"
-                                    sh script: "ssh ${SSH_ID}@${TCP_IP} 'rm -r /home/svt/fio_script/Logs/FIO'"
+                                    sh script: "scp -r ${SSH_ID}:/home/svt/fio_script/Logs/FIO/ ${WORKSPACE}"
+                                    sh script: "ssh ${SSH_ID} 'rm -r /home/svt/fio_script/Logs/FIO'"
                                     break
                                 case "marvo":
-                                    sh script: "scp -r ${SSH_ID}@${TCP_IP}:/home/svt/marvo/Logs/marvo root@10.18.134.101:/home/jenkins/workspace/Alamere_Test"
-                                    sh script: "ssh ${SSH_ID}@${TCP_IP} 'rm -r /home/svt/marvo/Logs/marvo'"
+                                    sh script: "scp -r ${SSH_ID}:/home/svt/marvo/Logs/marvo ${WORKSPACE}"
+                                    sh script: "ssh ${SSH_ID} 'rm -r /home/svt/marvo/Logs/marvo'"
                                     break
                             }
                             sh script: "tar -zPcv -f ${test}.tar.gz ${test}/*.log"
@@ -124,16 +126,27 @@ timestamps {
                             archiveArtifacts artifacts: "${test}.tar.gz", allowEmptyArchive: true
                             // Cleanup
                             sh "rm -rf ${test}/ ${test}.tar.gz"                            
-                            currentBuild.description = """<br /><a style="text-decoration: none; background-color:red; color:white" href="${env.BUILD_URL}artifact/${buildLog}"><b>Test failed: ${test}</b></a>"""
+                            currentBuild.description = """<br /><a style="text-decoration: none; background-color:red; color:white" href="${env.BUILD_URL}artifact/${test}_${TestName}.tar.gz"><b>Test failed: ${test}</b></a>"""
                         }finally {
                             // If there is no error, upload the test result table.    
-                            //Publish the result table on the status overview.       
-                            currentBuild.description = "<br /></strong>${resultsAsTable(results)}"                               
+                            // Publish the result table on the status overview.       
+                            currentBuild.description = currentBuild.description + "<br /></strong>${resultsAsTable(results, test)}"                                
+                            
                         } 
                 }
-            }           
-        }        
-    }      
+            }                 
+        }
+    }
+}        
+          
+timestamps {
+    stage("Build") {
+        echo "After Build"
+        currentBuild.description = "<strong><a href='${env.BUILD_URL}/flowGraphTable/'>View logs per step</a></strong>"      
+    }
+    stage("Test") {
+        parallel testTasks
+    }
 }
 
 /**
@@ -141,7 +154,7 @@ timestamps {
  * @param test The test means the different stage.
  * @param passedParser The function is used to check the selected file whether it includes required keyword. 
  */
-def collectTestResults(String test, Closure passedParser) {
+def collectTestResults(String test, Closure passedParser, String Testname) {
     String copyPath = "$env.ARTIFACTS_COPY_PATH"    
     
     // Initialize empty result map.
@@ -158,12 +171,12 @@ def collectTestResults(String test, Closure passedParser) {
         passedParser(logFile, resultMap)
     }
 
-    sh script: "tar -zPcv -f ${test}.tar.gz ${test}/*.log"
+    sh script: "tar -zPcv -f ${test}_${Testname}.tar.gz ${test}/*.log"
     // Store the zips as a tar file
-    archiveArtifacts artifacts: "${test}.tar.gz", allowEmptyArchive: true
+    archiveArtifacts artifacts: "${test}_${Testname}.tar.gz", allowEmptyArchive: true
 
     // Cleanup
-    sh "rm -rf ${test}/ ${test}.tar.gz"
+    sh "rm -rf ${test}/ ${test}_${Testname}.tar.gz"
 
     // Return the accumulated result.
     return resultMap
@@ -193,7 +206,7 @@ def jsonTypePassedParser(logFile, resultMap) {
  */
  
 @NonCPS
-String resultsAsTable(def testResults) {
+String resultsAsTable(def testResults, String testCase) {
     StringWriter  stringWriter  = new StringWriter()
     MarkupBuilder markupBuilder = new MarkupBuilder(stringWriter)
 
@@ -202,20 +215,22 @@ String resultsAsTable(def testResults) {
     markupBuilder.html {
         delegate.body {
             delegate.style(".passed { color: #468847; background-color: #dff0d8; border-color: #d6e9c6; } .failed { color: #b94a48; background-color: #f2dede; border-color: #eed3d7; }", type: 'text/css')
-            delegate.table {
+            delegate.table {                
                 testResults.each { test, testResult ->
-                    delegate.delegate.tr {
-                        delegate.td {
-                            delegate.strong("[Stage] ${test} ")
-                            delegate.a("${test} Logs", href: "${env.BUILD_URL}/artifact/" + "${test}.tar.gz")
+                        delegate.delegate.tr {                            
+                            delegate.td {
+                                delegate.strong("[Stage] ${test}")
+                                delegate.a("Logs", href: "${env.BUILD_URL}/artifact/${testCase}_${test}.tar.gz")
+                                echo "testname is ${testCase}_${test}"
+                            }
+                        }
+                        testResult.each { testName, testPassed ->
+                            delegate.delegate.delegate.tr {
+                                delegate.td("$testName", class: testPassed ? 'passed' : 'failed')
+                            }
                         }
                     }
-                    testResult.each { testName, testPassed ->
-                        delegate.delegate.delegate.tr {
-                            delegate.td("$testName", class: testPassed ? 'passed' : 'failed')
-                        }
-                    }
-                }
+                
             }
         }
     }
